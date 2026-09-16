@@ -51,3 +51,7 @@ Conventions to keep consistent when extending:
 ## Security posture
 
 Auth: yes, rate limiting: not yet. `/chat` requires a key from `GATEWAY_API_KEYS` (see `app/auth.py`); `/health` stays public. There is still no content guardrail, and the service is meant to run on localhost only.
+
+## Git Commit Policy
+
+Never add a Co-Authored-By trailer, a "Generated with Claude Code" line, or any Claude/Anthropic attribution to git commit messages or PR descriptions.
