@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.auth import AuthenticatedClient, require_api_key
+from app.auth import AuthenticatedClient, docs_bearer_scheme, require_api_key
 from app.config import MAX_MESSAGE_LENGTH, Settings, get_settings
 from app.guardrails import check_message
 from app.rate_limit import enforce_rate_limit
@@ -16,7 +16,14 @@ from app.services.llm_client import ContentBlocked, LLMError
 # is what guarantees 401 beats 429. FastAPI caches it, so it runs once.
 router = APIRouter(
     tags=["chat"],
-    dependencies=[Depends(require_api_key), Depends(enforce_rate_limit)],
+    dependencies=[
+        Depends(require_api_key),
+        Depends(enforce_rate_limit),
+        # Listed last and purely for the docs UI: it never rejects anything
+        # (see docs_bearer_scheme), it just puts the scheme in the OpenAPI
+        # document so /docs grows an Authorize button.
+        Depends(docs_bearer_scheme),
+    ],
 )
 
 # Requests are counted, not tokens, so a cap on the prompt is what bounds the
