@@ -8,6 +8,7 @@ fails loudly, so a mistake costs a test failure instead of quota.
 import pytest
 from fastapi.testclient import TestClient
 
+from app import rate_limit
 from app.config import Settings, get_settings
 from app.main import app
 from app.routers import chat
@@ -43,6 +44,36 @@ def fake_llm(monkeypatch) -> FakeGenerateReply:
 
     monkeypatch.setattr(llm_client, "_get_client", refuse_real_client)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limit():
+    """Buckets are module-level state; stop them leaking between tests."""
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
+
+
+class FakeClock:
+    """A stand-in for time.monotonic that only moves when a test says so."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> float:
+        self.now += seconds
+        return self.now
+
+
+@pytest.fixture
+def fake_clock(monkeypatch) -> FakeClock:
+    """Let rate-limit tests advance time instead of sleeping through a window."""
+    clock = FakeClock()
+    monkeypatch.setattr(rate_limit, "_now", clock)
+    return clock
 
 
 @pytest.fixture
