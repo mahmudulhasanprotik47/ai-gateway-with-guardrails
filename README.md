@@ -10,6 +10,7 @@ app/
   config.py            Loads .env once and exposes typed settings
   auth.py              API key check for /chat
   rate_limit.py        Per-client sliding-window limit for /chat
+  guardrails.py        PII and prompt-injection checks on /chat input
   routers/chat.py      POST /chat
   services/llm_client.py  Gemini call via the google-genai SDK
 requirements.txt
@@ -44,7 +45,8 @@ requirements.txt
    `.env.example`.
 
    Optional overrides: `GEMINI_MODEL` (default `gemini-flash-latest`), `APP_NAME`,
-   `RATE_LIMIT_REQUESTS` (default 5), `RATE_LIMIT_WINDOW_SECONDS` (default 60).
+   `RATE_LIMIT_REQUESTS` (default 5), `RATE_LIMIT_WINDOW_SECONDS` (default 60),
+   `GUARDRAIL_CHECKS` (default `email,card,phone,injection`).
    Get a key from https://aistudio.google.com/apikey.
 
 ## Run
@@ -88,6 +90,13 @@ request back and name internal identifiers. A missing, empty, or over-long
 the problem, but never repeating the value you sent. A missing or unknown API key
 is a `401`.
 
+Messages are screened before they reach Gemini. Anything that looks like an
+email address, a payment card number or a phone number, or that resembles a
+prompt-injection attempt, is rejected with a `400` naming the categories that
+tripped — never quoting your message back. Turn individual checks off with
+`GUARDRAIL_CHECKS`. The screening is deliberately shallow: see the "Notes"
+section.
+
 Each key gets 5 requests per 60 seconds by default. Over that, `/chat` answers
 `429` with a `Retry-After` header saying how many seconds to wait. The limit is
 per key, so one client running hot never affects another, and `/health` is never
@@ -95,7 +104,13 @@ limited.
 
 ## Notes
 
-`/chat` requires an API key and is rate limited per key. There is still no content
-guardrail, and rate-limit state is held in memory in a single process — running
-more than one worker multiplies the effective limit. Do not expose this beyond
-localhost as-is.
+`/chat` requires an API key, is rate limited per key, and screens input for PII
+and prompt injection. Rate-limit state is held in memory in a single process —
+running more than one worker multiplies the effective limit.
+
+The input screening is a first pass, not a guarantee. PII detection is regular
+expressions plus a Luhn and issuer-prefix check; it does not cover SSNs, IBANs,
+passports, addresses or names. The prompt-injection check matches a handful of
+known English phrasings and is defeated by translation, base64, spacing tricks
+or simply rewording. Treat a message that passes as "nothing obvious found",
+never as "safe". Do not expose this beyond localhost as-is.

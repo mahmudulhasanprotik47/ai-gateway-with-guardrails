@@ -3,10 +3,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.auth import require_api_key
-from app.config import get_settings
+from app.auth import AuthenticatedClient, require_api_key
+from app.config import Settings, get_settings
+from app.guardrails import check_message
 from app.rate_limit import enforce_rate_limit
-from app.services.llm_client import LLMError, generate_reply
+from app.services.llm_client import ContentBlocked, LLMError, generate_reply
 
 # Every route on this router requires an API key and is rate limited per key;
 # /health lives on the app itself and stays public. require_api_key is listed
@@ -37,13 +38,34 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(payload: ChatRequest) -> ChatResponse:
+async def chat(
+    payload: ChatRequest,
+    # Both are already resolved for the router dependencies above; FastAPI
+    # caches them per request, so asking again costs nothing and gives the
+    # handler the identity it logs and the settings the guardrails read.
+    # Taking settings via Depends rather than calling get_settings() here is
+    # what lets tests override them: get_settings is lru_cached, so a direct
+    # call ignores app.dependency_overrides entirely.
+    client: AuthenticatedClient = Depends(require_api_key),
+    settings: Settings = Depends(get_settings),
+) -> ChatResponse:
+    # Runs after auth (401) and the rate limiter (429), and after Pydantic has
+    # validated the body (422). A rejection here consumes a rate-limit slot,
+    # exactly as a 422 or a 502 already does.
+    check_message(payload.message, settings, client.key_id)
+
     try:
         reply = await generate_reply(payload.message)
+    except ContentBlocked as exc:
+        # The model refused the caller's input, so this is the caller's problem.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     except LLMError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
 
-    return ChatResponse(reply=reply, model=get_settings().gemini_model)
+    return ChatResponse(reply=reply, model=settings.gemini_model)

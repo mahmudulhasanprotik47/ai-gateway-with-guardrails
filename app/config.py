@@ -22,6 +22,12 @@ MIN_API_KEY_LENGTH = 32
 DEFAULT_RATE_LIMIT_REQUESTS = 5
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 
+# Input guardrails that run on /chat. Named individually because they differ
+# sharply in precision: email and card detection are high-confidence, while
+# phone and injection carry a real false-positive rate an operator may need to
+# switch off on its own.
+KNOWN_GUARDRAIL_CHECKS = ("email", "card", "phone", "injection")
+
 
 def _parse_api_keys(raw: str) -> tuple[str, ...]:
     """Split a comma-separated key list, dropping blank and too-short entries.
@@ -47,6 +53,40 @@ def _parse_api_keys(raw: str) -> tuple[str, ...]:
             "No valid GATEWAY_API_KEYS configured; /chat will reject every request."
         )
     return tuple(keys)
+
+
+def _parse_guardrail_checks(raw: str | None) -> frozenset[str]:
+    """Split the comma-separated check list, the way `_parse_api_keys` does.
+
+    Unset means every check is on. Set but empty turns them all off, which is
+    the same deliberate "shut it" spelling `RATE_LIMIT_REQUESTS=0` already uses.
+    An unrecognised name is dropped with a warning rather than failing the
+    boot, so a typo cannot take the service down; it does mean a misspelled
+    check is silently not running, hence the warning.
+    """
+    if raw is None:
+        return frozenset(KNOWN_GUARDRAIL_CHECKS)
+
+    checks: set[str] = set()
+    for position, entry in enumerate(raw.split(","), start=1):
+        name = entry.strip().lower()
+        if not name:
+            continue
+        if name not in KNOWN_GUARDRAIL_CHECKS:
+            # By position, never by value: a line-glue mistake in .env could put
+            # an API key in here, exactly as it once did for GATEWAY_API_KEYS.
+            logger.warning(
+                "GUARDRAIL_CHECKS entry #%d is not a known check; known checks "
+                "are %s. Ignoring it.",
+                position,
+                ", ".join(KNOWN_GUARDRAIL_CHECKS),
+            )
+            continue
+        checks.add(name)
+
+    if not checks:
+        logger.warning("No guardrail checks enabled; /chat input is unfiltered.")
+    return frozenset(checks)
 
 
 def _parse_int(name: str, default: int, minimum: int) -> int:
@@ -90,6 +130,10 @@ class Settings:
         )
         self.rate_limit_window_seconds: int = _parse_int(
             "RATE_LIMIT_WINDOW_SECONDS", DEFAULT_RATE_LIMIT_WINDOW_SECONDS, minimum=1
+        )
+        # Unset means all checks on; set-but-empty means all off.
+        self.guardrail_checks: frozenset[str] = _parse_guardrail_checks(
+            os.getenv("GUARDRAIL_CHECKS")
         )
 
     @property
