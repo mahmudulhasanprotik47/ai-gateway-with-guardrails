@@ -19,23 +19,29 @@ SECONDARY_KEY = "secondary-" + "e5f6g7h8" * 5
 
 FAKE_REPLY = "fake reply from the test double"
 
+# The GOOGLE_API_KEY every test app runs with. Named so the output guardrail
+# tests can make a reply leak it.
+GOOGLE_KEY = "fake-google-key-never-used"
+
 
 class FakeGenerateReply:
     """Stands in for generate_reply, recording the message and model per call.
 
     `calls` stays a list of messages so every existing assertion still reads
     naturally; `models` records which model each call went to, which is what
-    the routing tests need.
+    the routing tests need. `reply` is what every call returns; the output
+    guardrail tests set it to something the model should never have said.
     """
 
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.models: list[str] = []
+        self.reply = FAKE_REPLY
 
     async def __call__(self, message: str, model: str) -> str:
         self.calls.append(message)
         self.models.append(model)
-        return FAKE_REPLY
+        return self.reply
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +100,7 @@ def set_gateway_keys(monkeypatch):
     """
 
     def _set(raw_keys: str | None) -> Settings:
-        monkeypatch.setenv("GOOGLE_API_KEY", "fake-google-key-never-used")
+        monkeypatch.setenv("GOOGLE_API_KEY", GOOGLE_KEY)
         if raw_keys is None:
             monkeypatch.delenv("GATEWAY_API_KEYS", raising=False)
         else:

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import AuthenticatedClient, docs_bearer_scheme, require_api_key
 from app.config import MAX_MESSAGE_LENGTH, Settings, get_settings
-from app.guardrails import check_message
+from app.guardrails import check_message, check_reply
 from app.rate_limit import enforce_rate_limit
 from app.routing import generate_with_fallback
 from app.services.llm_client import ContentBlocked, LLMError
@@ -88,6 +88,11 @@ async def chat(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=_UPSTREAM_FAILURE_DETAIL,
         ) from exc
+
+    # After routing returned, never inside it: a withheld reply cannot trigger
+    # the tier fallback, and being outside the try above means no except clause
+    # can remap this 502 into the upstream-failure one.
+    check_reply(reply, settings, client.key_id)
 
     # Whichever model answered, including after a fallback - not the configured
     # default, which is only one of the two tiers.

@@ -12,7 +12,9 @@ import logging
 import pytest
 from google.genai import errors as genai_errors, types
 
+from app.config import get_settings
 from app.services import llm_client
+from tests.conftest import GOOGLE_KEY, PRIMARY_KEY, SECONDARY_KEY
 
 
 class FakeModels:
@@ -185,6 +187,53 @@ def test_automatic_function_calling_is_still_disabled(fake_gemini):
 
     config = models.calls[0]["config"]
     assert config.automatic_function_calling.disable is True
+
+
+# --- Tripwires for the output guardrail --------------------------------------------
+#
+# check_reply in app/guardrails.py is written for a request that carries the
+# caller's message and nothing else. These fail the moment that stops being true,
+# which is the moment its secret check needs revisiting.
+
+
+def test_no_system_prompt_is_sent(fake_gemini):
+    models = fake_gemini(make_response(text="hi"))
+
+    reply("say hello")
+
+    sent = models.calls[0]
+    assert sent["config"].system_instruction is None, (
+        "A system instruction is now sent: add its text to the secrets "
+        "check_reply matches, in app/guardrails.py."
+    )
+    # The other way to add a prompt: extra turns prepended to contents.
+    assert sent["contents"] == "say hello", (
+        "contents is no longer just the caller's message: revisit check_reply "
+        "in app/guardrails.py."
+    )
+
+
+@pytest.fixture
+def configured_secrets(monkeypatch):
+    """Settings built from known test secrets, so a leak into the request shows."""
+    monkeypatch.setenv("GOOGLE_API_KEY", GOOGLE_KEY)
+    monkeypatch.setenv("GATEWAY_API_KEYS", f"{PRIMARY_KEY},{SECONDARY_KEY}")
+    get_settings.cache_clear()
+    yield (PRIMARY_KEY, SECONDARY_KEY, GOOGLE_KEY)
+    get_settings.cache_clear()
+
+
+def test_no_configured_secret_is_sent_to_the_model(fake_gemini, configured_secrets):
+    """The guarantee the output secret check only backs up: keys never enter the
+    model's context, so a reply can only carry one the caller supplied."""
+    models = fake_gemini(make_response(text="hi"))
+
+    reply("say hello")
+
+    sent = repr(models.calls[0])
+    leaked = [i for i, secret in enumerate(configured_secrets) if secret in sent]
+    # Indexes, not values, so a failure does not print a key.
+    assert leaked == [], f"configured secret(s) #{leaked} sent to the model"
 
 
 # --- The prompt was blocked: the caller's input, so 400 ---------------------------

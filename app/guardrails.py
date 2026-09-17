@@ -1,7 +1,10 @@
-"""Input guardrails for /chat: PII patterns and a prompt-injection heuristic.
+"""Guardrails for /chat: input PII and injection checks, output PII and secrets.
 
-Two checks, both deliberately shallow, both rejecting rather than redacting so
-the caller learns why their message did not go through.
+On the way in, two checks, both deliberately shallow, both rejecting rather
+than redacting so the caller learns why their message did not go through. On
+the way out, `check_reply` runs the same PII detectors on the model's reply plus
+a secret check, and withholds the reply without saying why; see its docstring
+for how little that defends today.
 
 **PII is pattern matching, not DLP.** It looks for email addresses, card-shaped
 numbers that pass a Luhn check, and punctuated phone numbers. It does not look
@@ -244,4 +247,78 @@ def check_message(message: str, settings: Settings, key_id: str) -> None:
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=_build_detail(categories),
+    )
+
+
+# --- Output ---------------------------------------------------------------------
+
+# Internal only: names this path in the log line so it cannot be mistaken for an
+# input rejection. Never part of the response.
+_REASON = "output_guardrail"
+
+# What the caller is told, whichever check tripped. A constant, not a template:
+# both earlier leaks in this project were rejection bodies built from the
+# rejected content, and _build_detail is deliberately not reused because it
+# interpolates category names.
+_REPLY_WITHHELD_DETAIL = "Reply withheld by the gateway."
+
+
+def _leaks_secret(text: str, settings: Settings) -> bool:
+    """True if `text` contains a configured gateway key or the Google API key.
+
+    Whole values only. A prefix or fragment match would let a caller ask the
+    model to echo candidate prefixes and walk a key out one character at a time;
+    a whole-value hit only confirms a guess the caller already made in full.
+    Empty values are skipped because "" is in every string.
+    """
+    secrets = (*settings.api_keys, settings.google_api_key)
+    return any(secret and secret in text for secret in secrets)
+
+
+def check_reply(reply: str, settings: Settings, key_id: str) -> None:
+    """Withhold a model reply that carries PII or a secret, with HTTP 502.
+
+    A hard block: no redaction, no pass-through. PII reuses the input detectors
+    and follows `GUARDRAIL_CHECKS`, minus the injection heuristic, which judges
+    what a caller asks and not what a model answers. The secret check has no
+    switch; an exact match on a 32+ character value has no false-positive story.
+
+    502 rather than 400 for the reason a reply Gemini itself withholds is a 502:
+    the caller's input already passed `check_message`, so there is nothing to
+    blame them for. The detail is its own constant, distinct from the router's
+    upstream-failure string, so a block is not mistaken for an outage.
+
+    **A tripwire, not a boundary.** Nothing secret is ever sent to the model:
+    there is no system prompt, and neither key appears in the request. So today
+    a secret can only reach a reply if the caller pasted it into the prompt -
+    at which point it has already gone to Google - and PII in a reply is
+    fabricated or example data. A caller who wants content out asks for it
+    spaced, spelled out, or base64'd, and this sees none of it. It exists for
+    accidental leakage, and for the day a system prompt, tools, or retrieval
+    give the model something worth leaking; a system prompt's text joins
+    `secrets` in `_leaks_secret` then, with the same caveat about paraphrase.
+
+    Called from the handler after routing returns, never inside it, so a block
+    cannot trigger the tier fallback. Like `check_message`, a future route has
+    to call this itself.
+    """
+    categories = find_violations(reply, settings.guardrail_checks - {"injection"})
+    # Normalized for the same reason the PII detectors are: a fullwidth or
+    # zero-width-split key is still the key. NFKC leaves key characters alone.
+    if _leaks_secret(normalize(reply), settings):
+        categories += ("secret",)
+    if not categories:
+        return
+
+    # Reason code, category names and the caller's key_id. Never the reply, a
+    # matched value, or which configured key matched.
+    logger.warning(
+        "Output guardrail (%s) withheld a reply to client %s: %s",
+        _REASON,
+        key_id,
+        ", ".join(categories),
+    )
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=_REPLY_WITHHELD_DETAIL,
     )
