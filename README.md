@@ -10,7 +10,8 @@ app/
   config.py            Loads .env once and exposes typed settings
   auth.py              API key check for /chat
   rate_limit.py        Per-client sliding-window limit for /chat
-  guardrails.py        PII and prompt-injection checks on /chat input
+  guardrails.py        PII and prompt-injection checks on /chat input,
+                       PII and secret checks on the reply
   routing.py           Picks a model by message size, retries once on failure
   routers/chat.py      POST /chat
   services/llm_client.py  Gemini call via the google-genai SDK
@@ -59,6 +60,10 @@ uvicorn app.main:app --reload
 ```
 
 The server listens on http://127.0.0.1:8000. Interactive docs: http://127.0.0.1:8000/docs
+
+The docs page has an **Authorize** button: paste a key from `GATEWAY_API_KEYS`
+and `/chat` can be tried from the browser instead of curl. It only fills in the
+`Authorization` header for you; the key is still checked by `app/auth.py`.
 
 ## Endpoints
 
@@ -112,6 +117,17 @@ tripped — never quoting your message back. Turn individual checks off with
 `GUARDRAIL_CHECKS`. The screening is deliberately shallow: see the "Notes"
 section.
 
+Replies are screened on the way back too. If the model's answer contains
+something that looks like an email address, a card number or a phone number, or
+contains one of your `GATEWAY_API_KEYS` values or the `GOOGLE_API_KEY`, the reply
+is withheld: `/chat` answers `502` with a fixed `detail` of `Reply withheld by
+the gateway.` and returns none of the text. The response is identical whichever
+check tripped, so it names neither the matched content nor the category; the
+server log records the category and the client, never the reply. The same
+`GUARDRAIL_CHECKS` switches apply (the injection check is input-only), while the
+secret check is always on. There is no redaction or partial answer, and a
+withheld reply still costs you the upstream call and a rate-limit slot.
+
 Each key gets 5 requests per 60 seconds by default. Over that, `/chat` answers
 `429` with a `Retry-After` header saying how many seconds to wait. The limit is
 per key, so one client running hot never affects another, and `/health` is never
@@ -119,9 +135,10 @@ limited.
 
 ## Notes
 
-`/chat` requires an API key, is rate limited per key, and screens input for PII
-and prompt injection. Rate-limit state is held in memory in a single process —
-running more than one worker multiplies the effective limit.
+`/chat` requires an API key, is rate limited per key, screens input for PII and
+prompt injection, and screens replies for PII and secrets. Rate-limit state is
+held in memory in a single process — running more than one worker multiplies the
+effective limit.
 
 The fallback is between two Gemini tiers on one API key. It covers a single
 model being slow or briefly unavailable; it does not cover Google being down,
@@ -134,4 +151,16 @@ expressions plus a Luhn and issuer-prefix check; it does not cover SSNs, IBANs,
 passports, addresses or names. The prompt-injection check matches a handful of
 known English phrasings and is defeated by translation, base64, spacing tricks
 or simply rewording. Treat a message that passes as "nothing obvious found",
-never as "safe". Do not expose this beyond localhost as-is.
+never as "safe".
+
+The reply screening is a tripwire rather than a boundary, and it is worth
+knowing why. Nothing secret is ever sent to the model — there is no system
+prompt, and neither key is part of the request — so a key can only come back if
+you pasted it into your message, by which point it has already reached Google.
+PII in a reply is example or invented data, and ordinary examples are withheld
+along with the rest: an answer containing `user@example.com`, the
+`4242 4242 4242 4242` test card or `555-123-4567` trips it. It also reuses the
+same shallow detectors, so a reply asked for in another shape (spaced out,
+spelled out, base64) walks past it. It catches accidents, and it earns more the
+day a system prompt, tools or retrieval give the model something worth leaking.
+Do not expose this beyond localhost as-is.
