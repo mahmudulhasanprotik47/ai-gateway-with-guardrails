@@ -265,6 +265,30 @@ def test_health_stays_public(client, set_gateway_keys, headers):
     assert "www-authenticate" not in response.headers
 
 
+def test_openapi_declares_the_bearer_scheme_on_chat_only(client):
+    """The Authorize button on /docs is the whole point of docs_bearer_scheme.
+
+    It is decorative - it never accepts or rejects a request - so nothing else
+    in this file would notice if it were dropped. What would break is silent:
+    /docs loses the lock icon and /chat can only be tried with curl. This pins
+    the OpenAPI document instead, which is the only place the scheme shows up.
+    """
+    schema = client.get("/openapi.json").json()
+
+    assert schema["components"]["securitySchemes"]["GatewayApiKey"] == {
+        "type": "http",
+        "scheme": "bearer",
+        "description": (
+            "Paste a key from GATEWAY_API_KEYS. "
+            "Sent as `Authorization: Bearer <key>`."
+        ),
+    }
+    # Listing it on the operation is what makes Swagger send the header.
+    assert schema["paths"]["/chat"]["post"]["security"] == [{"GatewayApiKey": []}]
+    # /health is public, and the docs must not imply otherwise.
+    assert "security" not in schema["paths"]["/health"]["get"]
+
+
 # --- Logging ---------------------------------------------------------------------
 
 

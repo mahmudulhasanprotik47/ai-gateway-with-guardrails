@@ -8,10 +8,43 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPBearer
 
 from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
+
+# Decorative. This exists so Swagger UI at /docs renders a lock icon and an
+# "Authorize" button, so a key can be pasted in the browser and /chat tried
+# interactively instead of reaching for curl. It declares the scheme in the
+# OpenAPI document and does nothing else.
+#
+# `auto_error=False` is not optional. The default, `auto_error=True`, makes
+# HTTPBearer.__call__ raise `HTTPException(401, "Not authenticated")` on its
+# own whenever the header is missing or is not Bearer. With `auto_error=False`,
+# both of its raise statements are unreachable and __call__ only ever returns
+# credentials or None, so it cannot accept or reject anything.
+#
+# Today that generic 401 would not actually surface, because this scheme is
+# listed *after* require_api_key in the router's dependencies and FastAPI
+# solves them in order, so require_api_key raises first. That ordering is the
+# only thing hiding it, and it is not something this module controls: reorder
+# the list and `auto_error=True` would replace the specific detail strings
+# ("Missing or malformed Authorization header", "Invalid API key") with a
+# generic one. Keeping it False means correctness here does not depend on
+# where a future edit puts this in that list.
+#
+# require_api_key stays the sole authority on whether a request is authorized:
+# it re-reads the header itself (via getlist, so duplicate headers are still
+# caught), and nothing below consults this scheme's return value.
+# Verified against fastapi 0.141.1.
+docs_bearer_scheme = HTTPBearer(
+    auto_error=False,
+    scheme_name="GatewayApiKey",
+    description=(
+        "Paste a key from GATEWAY_API_KEYS. Sent as `Authorization: Bearer <key>`."
+    ),
+)
 
 # RFC 6750: "Bearer" 1*SP b64token. The scheme is compared case-insensitively
 # in parse_bearer. No nested quantifiers, so matching stays linear in length.
