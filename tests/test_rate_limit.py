@@ -15,8 +15,8 @@ from app.config import (
     DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
     Settings,
 )
+from app import routing
 from app.main import app
-from app.routers import chat
 from app.routers.chat import MAX_MESSAGE_LENGTH
 from app.services.llm_client import LLMError
 from tests.conftest import FAKE_REPLY, PRIMARY_KEY, SECONDARY_KEY
@@ -257,10 +257,12 @@ def test_invalid_body_consumes_a_slot(chat_client, fake_clock, fake_llm):
 def test_upstream_failure_consumes_a_slot(chat_client, fake_clock, monkeypatch):
     """A 502 means we did call Gemini, so it counts against the caller."""
 
-    async def failing_reply(message: str) -> str:
-        raise LLMError("upstream is unhappy")
+    async def failing_reply(message: str, model: str) -> str:
+        # Not retryable, so this is exactly one upstream call per request and
+        # the slot accounting stays easy to read.
+        raise LLMError("upstream is unhappy", retryable=False)
 
-    monkeypatch.setattr(chat, "generate_reply", failing_reply)
+    monkeypatch.setattr(routing, "generate_reply", failing_reply)
     client = chat_client()
 
     for _ in range(LIMIT):

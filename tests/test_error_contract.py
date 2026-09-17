@@ -11,6 +11,7 @@ import logging
 import pytest
 from google.genai import errors as genai_errors
 
+from app import routing
 from app.routers.chat import MAX_MESSAGE_LENGTH
 from app.services import llm_client
 from tests.conftest import PRIMARY_KEY
@@ -164,10 +165,11 @@ def test_upstream_error_text_is_logged_not_returned(upstream_error, caplog):
 
     with pytest.raises(llm_client.LLMError) as raised:
         # No asyncio plugin is installed, and this call needs no running loop.
-        asyncio.run(llm_client.generate_reply("say hello"))
+        asyncio.run(llm_client.generate_reply("say hello", "gemini-flash-latest"))
 
+    # The exception message is for operators and carries none of the upstream
+    # text; the router replaces it with a fixed string before answering anyway.
     detail = str(raised.value)
-    assert detail == "Upstream model request failed."
     for secret in (CARD, EMAIL, SECRET_TEXT, "my-private-project-42", "gemini-secret"):
         assert secret not in detail
 
@@ -179,11 +181,10 @@ def test_upstream_error_text_is_logged_not_returned(upstream_error, caplog):
 def test_upstream_error_detail_reaches_the_client_as_502(
     client, upstream_error, monkeypatch
 ):
-    # conftest fakes chat.generate_reply wholesale; put the real one back so the
-    # router sees the LLMError that generate_reply actually raises.
-    from app.routers import chat as chat_router
-
-    monkeypatch.setattr(chat_router, "generate_reply", llm_client.generate_reply)
+    # conftest fakes routing.generate_reply wholesale; put the real one back so
+    # the router sees the LLMError that generate_reply actually raises. Patching
+    # app.routers.chat here would be a no-op and the test would pass vacuously.
+    monkeypatch.setattr(routing, "generate_reply", llm_client.generate_reply)
     upstream_error(genai_errors.APIError(400, LEAKY_RESPONSE_JSON))
 
     response = client.post(

@@ -1,10 +1,10 @@
 """FastAPI entrypoint for the AI gateway."""
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.routers import chat
 
 settings = get_settings()
@@ -45,10 +45,21 @@ async def validation_exception_handler(
 
 
 @app.get("/health", tags=["meta"])
-async def health() -> dict[str, object]:
-    """Liveness probe; also reports whether an API key was found."""
+async def health(settings: Settings = Depends(get_settings)) -> dict[str, object]:
+    """Liveness probe; also reports whether an API key was found.
+
+    Settings arrive by dependency rather than from the module-level instance
+    above: `get_settings` is `lru_cache`d, so a direct call would ignore
+    `app.dependency_overrides` and report whatever was cached first. The
+    module-level `settings` is still fine for the app metadata, which is fixed
+    at construction.
+    """
+    # Both tiers: `model` keeps its meaning (the escalation tier), but short
+    # messages are answered by `cheap_model`, so reporting only one would
+    # mislead about what actually serves a typical request.
     return {
         "status": "ok",
         "model": settings.gemini_model,
+        "cheap_model": settings.gemini_cheap_model,
         "api_key_configured": settings.is_configured,
     }

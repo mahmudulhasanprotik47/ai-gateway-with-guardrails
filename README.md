@@ -11,6 +11,7 @@ app/
   auth.py              API key check for /chat
   rate_limit.py        Per-client sliding-window limit for /chat
   guardrails.py        PII and prompt-injection checks on /chat input
+  routing.py           Picks a model by message size, retries once on failure
   routers/chat.py      POST /chat
   services/llm_client.py  Gemini call via the google-genai SDK
 requirements.txt
@@ -46,7 +47,9 @@ requirements.txt
 
    Optional overrides: `GEMINI_MODEL` (default `gemini-flash-latest`), `APP_NAME`,
    `RATE_LIMIT_REQUESTS` (default 5), `RATE_LIMIT_WINDOW_SECONDS` (default 60),
-   `GUARDRAIL_CHECKS` (default `email,card,phone,injection`).
+   `GUARDRAIL_CHECKS` (default `email,card,phone,injection`),
+   `GEMINI_CHEAP_MODEL` (default `gemini-flash-lite-latest`),
+   `ROUTING_TOKEN_THRESHOLD` (default 1000).
    Get a key from https://aistudio.google.com/apikey.
 
 ## Run
@@ -66,7 +69,12 @@ curl http://127.0.0.1:8000/health
 ```
 
 ```json
-{ "status": "ok", "model": "gemini-flash-latest", "api_key_configured": true }
+{
+  "status": "ok",
+  "model": "gemini-flash-latest",
+  "cheap_model": "gemini-flash-lite-latest",
+  "api_key_configured": true
+}
 ```
 
 ### `POST /chat`
@@ -90,6 +98,13 @@ request back and name internal identifiers. A missing, empty, or over-long
 the problem, but never repeating the value you sent. A missing or unknown API key
 is a `401`.
 
+Short messages are answered by a cheaper model and longer ones escalate: below
+`ROUTING_TOKEN_THRESHOLD` estimated tokens (roughly characters / 4) the request
+goes to `GEMINI_CHEAP_MODEL`, at or above it to `GEMINI_MODEL`. The `model` field
+in the response always names the model that actually answered. If that call
+fails with a retryable error, the request is retried **once** on the other tier
+and no more; that retry costs you nothing extra against the rate limit.
+
 Messages are screened before they reach Gemini. Anything that looks like an
 email address, a payment card number or a phone number, or that resembles a
 prompt-injection attempt, is rejected with a `400` naming the categories that
@@ -107,6 +122,12 @@ limited.
 `/chat` requires an API key, is rate limited per key, and screens input for PII
 and prompt injection. Rate-limit state is held in memory in a single process —
 running more than one worker multiplies the effective limit.
+
+The fallback is between two Gemini tiers on one API key. It covers a single
+model being slow or briefly unavailable; it does not cover Google being down,
+the key being revoked, or the quota being spent, because both tiers share the
+same key and account. A real multi-provider fallback would need a second vendor
+and a second paid key, which this project deliberately does not require.
 
 The input screening is a first pass, not a guarantee. PII detection is regular
 expressions plus a Luhn and issuer-prefix check; it does not cover SSNs, IBANs,

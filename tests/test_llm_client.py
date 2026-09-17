@@ -1,7 +1,7 @@
 """Safety settings and blocked-response handling (app/services/llm_client.py).
 
 These call the real `generate_reply`, so they cannot go through the `/chat`
-route: tests/conftest.py replaces `chat.generate_reply` wholesale. The transport
+route: tests/conftest.py replaces `routing.generate_reply` wholesale. The transport
 is faked one layer lower, at `_get_client`, so the code under test is the real
 one and no request ever leaves the machine.
 """
@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 import pytest
-from google.genai import types
+from google.genai import errors as genai_errors, types
 
 from app.services import llm_client
 
@@ -25,6 +25,18 @@ class FakeModels:
     async def generate_content(self, **kwargs):
         self.calls.append(kwargs)
         return self._response
+
+
+class _RaisingModels:
+    """Like FakeModels, but the call fails instead of returning."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.calls: list[dict] = []
+
+    async def generate_content(self, **kwargs):
+        self.calls.append(kwargs)
+        raise self._error
 
 
 class FakeClient:
@@ -48,9 +60,25 @@ def fake_gemini(monkeypatch):
     return _set
 
 
-def reply(message: str = "say hello") -> str:
+@pytest.fixture
+def failing_gemini(monkeypatch):
+    """Point generate_reply at a transport that raises `error`."""
+
+    def _set(error: Exception) -> _RaisingModels:
+        client = FakeClient(None)
+        client.models = _RaisingModels(error)
+        monkeypatch.setattr(llm_client, "_get_client", lambda: client)
+        return client.models
+
+    return _set
+
+
+MODEL = "gemini-flash-latest"
+
+
+def reply(message: str = "say hello", model: str = MODEL) -> str:
     # No asyncio plugin is installed and this needs no running loop.
-    return asyncio.run(llm_client.generate_reply(message))
+    return asyncio.run(llm_client.generate_reply(message, model))
 
 
 def make_response(
@@ -110,6 +138,44 @@ def test_civic_integrity_is_deliberately_left_unset(fake_gemini):
 
     categories = {s.category for s in models.calls[0]["config"].safety_settings}
     assert types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY not in categories
+
+
+def test_the_requested_model_is_forwarded_to_the_api(fake_gemini):
+    """The one kwarg the whole model-accuracy fix rests on."""
+    models = fake_gemini(make_response(text="hi"))
+
+    reply(model="gemini-flash-lite-latest")
+
+    assert models.calls[0]["model"] == "gemini-flash-lite-latest"
+
+
+@pytest.mark.parametrize(
+    ("code", "retryable"),
+    [
+        (500, True),
+        (503, True),
+        (429, False),
+        (403, False),
+        (404, False),
+        (400, False),
+    ],
+    ids=["500", "503", "429 quota", "403 revoked", "404 bad model", "400 bad request"],
+)
+def test_api_error_retryability_follows_the_status_code(failing_gemini, code, retryable):
+    """Only a 5xx could plausibly go better on the other tier.
+
+    429 is the shared account's quota, so retrying compounds an exhaustion that
+    is already happening; 403 and 400 fail identically either way; and retrying
+    a 404 would hide a mistyped model id behind a fallback that always works.
+    """
+    failing_gemini(
+        genai_errors.APIError(code, {"error": {"code": code, "message": "nope"}})
+    )
+
+    with pytest.raises(llm_client.LLMError) as raised:
+        reply()
+
+    assert raised.value.retryable is retryable
 
 
 def test_automatic_function_calling_is_still_disabled(fake_gemini):

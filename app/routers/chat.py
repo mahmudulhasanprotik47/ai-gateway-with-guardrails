@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.auth import AuthenticatedClient, require_api_key
-from app.config import Settings, get_settings
+from app.config import MAX_MESSAGE_LENGTH, Settings, get_settings
 from app.guardrails import check_message
 from app.rate_limit import enforce_rate_limit
-from app.services.llm_client import ContentBlocked, LLMError, generate_reply
+from app.routing import generate_with_fallback
+from app.services.llm_client import ContentBlocked, LLMError
 
 # Every route on this router requires an API key and is rate limited per key;
 # /health lives on the app itself and stays public. require_api_key is listed
@@ -19,8 +20,16 @@ router = APIRouter(
 )
 
 # Requests are counted, not tokens, so a cap on the prompt is what bounds the
-# cost of a single call. ~4k tokens: far more than a chat turn needs.
-MAX_MESSAGE_LENGTH = 16_000
+# cost of a single call. ~4k tokens: far more than a chat turn needs. Defined in
+# config.py (the routing threshold is sanity-checked against it) and re-exported
+# here, where callers and tests have always looked for it.
+__all__ = ["MAX_MESSAGE_LENGTH", "ChatRequest", "ChatResponse", "chat", "router"]
+
+# What a caller is told when the upstream call fails, whichever LLMError it was.
+# Every one of those messages is written for operators: one names an
+# environment variable, another describes the model's behaviour. None of them
+# is the caller's business, and the API error text can quote the request back.
+_UPSTREAM_FAILURE_DETAIL = "Upstream model request failed."
 
 
 class ChatRequest(BaseModel):
@@ -55,17 +64,24 @@ async def chat(
     check_message(payload.message, settings, client.key_id)
 
     try:
-        reply = await generate_reply(payload.message)
+        reply, model_used = await generate_with_fallback(
+            payload.message, settings, client.key_id
+        )
     except ContentBlocked as exc:
         # The model refused the caller's input, so this is the caller's problem.
+        # This message is ours and safe to show; it quotes nothing.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
     except LLMError as exc:
+        # Deliberately not str(exc): see _UPSTREAM_FAILURE_DETAIL. llm_client
+        # has already logged what actually went wrong.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
+            detail=_UPSTREAM_FAILURE_DETAIL,
         ) from exc
 
-    return ChatResponse(reply=reply, model=settings.gemini_model)
+    # Whichever model answered, including after a fallback - not the configured
+    # default, which is only one of the two tiers.
+    return ChatResponse(reply=reply, model=model_used)

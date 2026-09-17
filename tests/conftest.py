@@ -8,10 +8,9 @@ fails loudly, so a mistake costs a test failure instead of quota.
 import pytest
 from fastapi.testclient import TestClient
 
-from app import rate_limit
+from app import rate_limit, routing
 from app.config import Settings, get_settings
 from app.main import app
-from app.routers import chat
 from app.services import llm_client
 
 # Both are at least MIN_API_KEY_LENGTH characters, from RFC 6750's token set.
@@ -22,13 +21,20 @@ FAKE_REPLY = "fake reply from the test double"
 
 
 class FakeGenerateReply:
-    """Stands in for generate_reply and records every message it receives."""
+    """Stands in for generate_reply, recording the message and model per call.
+
+    `calls` stays a list of messages so every existing assertion still reads
+    naturally; `models` records which model each call went to, which is what
+    the routing tests need.
+    """
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.models: list[str] = []
 
-    async def __call__(self, message: str) -> str:
+    async def __call__(self, message: str, model: str) -> str:
         self.calls.append(message)
+        self.models.append(model)
         return FAKE_REPLY
 
 
@@ -36,8 +42,10 @@ class FakeGenerateReply:
 def fake_llm(monkeypatch) -> FakeGenerateReply:
     """Replace the Gemini call in every test; fail if the real client is built."""
     fake = FakeGenerateReply()
-    # chat.py imports generate_reply by name, so patch it where it's looked up.
-    monkeypatch.setattr(chat, "generate_reply", fake)
+    # routing.py imports generate_reply by name and is the only caller, so this
+    # is where it must be patched. Patching app.routers.chat would silently
+    # intercept nothing now that the handler calls generate_with_fallback.
+    monkeypatch.setattr(routing, "generate_reply", fake)
 
     def refuse_real_client():
         raise AssertionError("A test tried to create a real Gemini client.")
