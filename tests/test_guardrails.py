@@ -10,13 +10,14 @@ the limiter, and leakage.
 import logging
 import random
 import re
+import time
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
 from app.config import KNOWN_GUARDRAIL_CHECKS, Settings
-from app.guardrails import _luhn_ok, check_message
+from app.guardrails import _has_card, _has_email, _luhn_ok, check_message
 from tests.conftest import PRIMARY_KEY
 
 KEY_ID = "0123456789abcdef"
@@ -171,6 +172,36 @@ def test_luhn_accepts_known_test_cards(digits):
 )
 def test_luhn_rejects_a_mistyped_digit(digits):
     assert not _luhn_ok(digits)
+
+
+# --- Scan cost ---------------------------------------------------------------------
+#
+# The detectors also run on model replies, which MAX_MESSAGE_LENGTH does not cap,
+# and they run synchronously on the event loop, so a slow scan stalls every
+# client. The bounds are generous on purpose; the quadratic versions these guard
+# against took ~24s and ~6.7s on the same inputs.
+
+
+def test_email_scan_is_linear_on_a_crafted_worst_case():
+    text = "a" * 64_000 + "@"
+
+    started = time.perf_counter()
+    assert not _has_email(text)
+    assert time.perf_counter() - started < 1.0
+
+
+def test_card_scan_is_linear_on_a_long_digit_run():
+    text = "1" * 512_000
+
+    started = time.perf_counter()
+    assert not _has_card(text)
+    assert time.perf_counter() - started < 3.0
+
+
+def test_bounded_email_pattern_still_finds_an_address_after_a_long_run():
+    # The local part is capped at 64, but search() just starts the match later,
+    # so a long run glued onto an address still counts as an address.
+    assert _has_email("x" * 500 + "bob@example.com")
 
 
 # --- PII: phone numbers -------------------------------------------------------------

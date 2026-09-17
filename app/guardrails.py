@@ -54,21 +54,26 @@ _CARD_CANDIDATE_RE = re.compile(r"[0-9][0-9 \-]{11,}[0-9]")
 # also start like a real card and be a length that issuer really uses takes
 # that to ~7.5% while still catching every test PAN, including one with extra
 # digits stuck on the front. Measured, not guessed; see test_card_windows.
+#
+# No "^" anchors: these are applied with pattern.match(digits, start), which
+# already anchors at `start`, whereas "^" only ever matches at index 0 and would
+# silently disable every window after the first.
 _CARD_FORMATS = (
-    (re.compile(r"^4"), (13, 16, 19)),  # Visa
-    (re.compile(r"^(?:5[1-5]|2[2-7])"), (16,)),  # Mastercard
-    (re.compile(r"^3[47]"), (15,)),  # American Express
-    (re.compile(r"^(?:6011|65|64[4-9])"), (16,)),  # Discover
-    (re.compile(r"^3(?:0[0-5]|[689])"), (14,)),  # Diners Club
-    (re.compile(r"^35"), (16,)),  # JCB
+    (re.compile(r"4"), (13, 16, 19)),  # Visa
+    (re.compile(r"(?:5[1-5]|2[2-7])"), (16,)),  # Mastercard
+    (re.compile(r"3[47]"), (15,)),  # American Express
+    (re.compile(r"(?:6011|65|64[4-9])"), (16,)),  # Discover
+    (re.compile(r"3(?:0[0-5]|[689])"), (14,)),  # Diners Club
+    (re.compile(r"35"), (16,)),  # JCB
 )
 
 # Crude on purpose, and never the sole gate: the literal "@" pre-check in
 # _has_email is what stops this running on text that cannot contain an address.
-# ponytail: still quadratic on a crafted worst case (16k of one character then
-# an "@"). MAX_MESSAGE_LENGTH caps the damage; switch to scanning "@" positions
-# if that ever shows up in a profile.
-_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}")
+# Both sides are bounded (RFC 5321's 64-octet local part and 253-octet domain),
+# which is what keeps a search linear: unbounded "+" made it quadratic on a
+# crafted run of one character then an "@" (64k took ~24s). That used to be
+# capped by MAX_MESSAGE_LENGTH, but replies have no such cap.
+_EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]{1,253}\.[A-Za-z]{2,}")
 
 # Punctuation is required, so bare digit runs - years, quantities, order
 # numbers - are not phone numbers. This is the least precise of the three.
@@ -148,18 +153,22 @@ def _has_card(text: str) -> bool:
     just the whole run, because a card rarely sits alone: "ref 14111111111111111"
     leaves a 17-digit run once separators come out, and testing only the full run
     would miss the 16-digit card inside it.
+
+    Windows are never copied as `digits[start:]`: that is a fresh copy of the
+    rest of the run per start position, quadratic on a long run. Matching at
+    `start` and slicing only `length` digits keeps the scan linear.
     """
     if not any(char.isdigit() for char in text):  # the pre-check
         return False
     for match in _CARD_CANDIDATE_RE.finditer(text):
         digits = _NON_DIGITS_RE.sub("", match.group())
         for start in range(len(digits)):
-            window = digits[start:]
             for prefix, lengths in _CARD_FORMATS:
-                if not prefix.match(window):
+                if not prefix.match(digits, start):
                     continue
                 for length in lengths:
-                    if length <= len(window) and _luhn_ok(window[:length]):
+                    end = start + length
+                    if end <= len(digits) and _luhn_ok(digits[start:end]):
                         return True
     return False
 
