@@ -81,8 +81,12 @@ curl -X POST http://127.0.0.1:8000/chat \
 ```
 
 Errors from the upstream model (missing key, quota, bad model name) come back as
-`502` with the reason in `detail`. A missing, empty, or over-long `message` field
-(the cap is 16,000 characters) is a `422`. A missing or unknown API key is a `401`.
+`502` with a fixed `detail` of `Upstream model request failed.` — the real reason
+is written to the server log, because the upstream error text can quote your
+request back and name internal identifiers. A missing, empty, or over-long
+`message` field (the cap is 16,000 characters) is a `422` naming the field and
+the problem, but never repeating the value you sent. A missing or unknown API key
+is a `401`.
 
 Each key gets 5 requests per 60 seconds by default. Over that, `/chat` answers
 `429` with a `Retry-After` header saying how many seconds to wait. The limit is
