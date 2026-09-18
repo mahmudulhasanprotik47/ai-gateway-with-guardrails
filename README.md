@@ -133,6 +133,17 @@ Each key gets 5 requests per 60 seconds by default. Over that, `/chat` answers
 per key, so one client running hot never affects another, and `/health` is never
 limited.
 
+Every `/chat` request, accepted or rejected, writes one JSON line to stdout:
+
+```json
+{"ts": "2026-09-18T10:15:02.114+00:00", "key_id": "3f9a1c0d2b7e4a61", "method": "POST", "path": "/chat", "status": 200, "latency_ms": 812.4, "model": "gemini-flash-lite-latest"}
+```
+
+`key_id` is a non-secret label for the client key, or `"unauthenticated"` when no
+key was accepted. `model` is `null` when no model answered. The line never
+contains the key, your message, the reply, or the query string. It goes to stdout
+only; shipping it anywhere else is up to whatever runs the process.
+
 ## Notes
 
 `/chat` requires an API key, is rate limited per key, screens input for PII and

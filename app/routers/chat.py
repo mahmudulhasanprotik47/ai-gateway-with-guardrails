@@ -1,6 +1,6 @@
 """POST /chat — forward a message to the model and return its reply."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.auth import AuthenticatedClient, docs_bearer_scheme, require_api_key
@@ -56,6 +56,7 @@ class ChatResponse(BaseModel):
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     payload: ChatRequest,
+    request: Request,
     # Both are already resolved for the router dependencies above; FastAPI
     # caches them per request, so asking again costs nothing and gives the
     # handler the identity it logs and the settings the guardrails read.
@@ -88,6 +89,11 @@ async def chat(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=_UPSTREAM_FAILURE_DETAIL,
         ) from exc
+
+    # For the per-request summary line in main.py. Before check_reply, so a
+    # withheld reply still records which tier produced it; after the try, so an
+    # upstream failure records none.
+    request.state.model = model_used
 
     # After routing returned, never inside it: a withheld reply cannot trigger
     # the tier fallback, and being outside the try above means no except clause

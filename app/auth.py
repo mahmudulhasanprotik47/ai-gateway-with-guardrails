@@ -144,4 +144,8 @@ async def require_api_key(
     if not found:
         raise _reject(request, "unknown API key", _INVALID_DETAIL)
 
-    return AuthenticatedClient(key_id=presented.hex()[:16])
+    key_id = presented.hex()[:16]
+    # For the per-request summary line in main.py. Set only here, on success,
+    # so a rejected key's digest is never logged.
+    request.state.key_id = key_id
+    return AuthenticatedClient(key_id=key_id)
