@@ -2,6 +2,17 @@
 
 A minimal FastAPI service that forwards chat messages to the Google Gemini API.
 
+## Demo
+
+A real request going through the gateway, authenticated and answered:
+
+![Successful request](docs/screenshots/demo-success-request-body.png)
+![Successful request](docs/screenshots/demo-success-response-body.png)
+
+Without a valid key, the same request is rejected before it ever reaches Gemini:
+
+![Rejected request](docs/screenshots/demo-rejected.png)
+
 ## Structure
 
 ```
