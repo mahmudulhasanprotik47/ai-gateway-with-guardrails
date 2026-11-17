@@ -1,5 +1,5 @@
 -r requirements.txt
-pytest>=9.1
+pytest==9.1.1
 # httpx2, not httpx: Starlette's TestClient imports httpx2 first and only
 # falls back to httpx with a deprecation warning.
-httpx2>=2.13
+httpx2==2.13.0
