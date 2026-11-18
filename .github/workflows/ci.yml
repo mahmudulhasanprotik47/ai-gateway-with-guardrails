@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - run: pip install --require-hashes -r requirements-dev.lock
+      - run: pytest -q
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -t ai-gateway:ci .
+      - name: Smoke test /health
+        run: |
+          docker run -d --name gw -p 8000:8000 ai-gateway:ci
+          for i in $(seq 1 20); do
+            curl -fs localhost:8000/health && exit 0
+            sleep 1
+          done
+          docker logs gw
+          exit 1
