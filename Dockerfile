@@ -9,12 +9,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # All following paths are relative to /app inside the image.
 WORKDIR /app
 
-# Copy only the dependency list first, so this layer and the install below
-# stay cached until requirements.txt itself changes.
-COPY requirements.txt .
+# Copy only the Linux lock file first, so this layer and the install below
+# stay cached until requirements.lock itself changes.
+COPY requirements.lock .
 
-# Install runtime deps only; --no-cache-dir keeps pip's download cache out of the image.
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the exact locked runtime deps. --require-hashes makes pip check every
+# downloaded file against the sha256 in the lock: a tampered or swapped package
+# fails the build instead of shipping. --no-cache-dir keeps pip's cache out of the image.
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # Copy the application code last: editing it re-runs only this cheap step.
 COPY app/ ./app/
