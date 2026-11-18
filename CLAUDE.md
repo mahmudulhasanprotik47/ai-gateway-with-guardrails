@@ -30,6 +30,16 @@ curl -X POST http://127.0.0.1:8000/chat -H "Authorization: Bearer <one of GATEWA
 
 Tests live in `tests/` (pytest). There is no linter or formatter configured yet.
 
+## Dependencies & CI
+
+- **To change a dependency:** edit `requirements.txt` / `requirements-dev.txt`, then re-run **both** commands below (needs `pip install uv` in the venv; uv is a tool, never a requirement), and commit the `.txt` and `.lock` files together.
+  ```bash
+  uv pip compile requirements.txt --generate-hashes --python-platform linux --python-version 3.14 -o requirements.lock
+  uv pip compile requirements-dev.txt --generate-hashes --python-platform linux --python-version 3.14 -o requirements-dev.lock
+  ```
+- **The `.lock` files are Linux-only** (Docker, CI and Render all run Linux; e.g. they pin `uvloop`, which doesn't install on Windows). Don't install them on Windows; local dev keeps using `requirements-dev.txt`. The Dockerfile installs `requirements.lock` with `--require-hashes`.
+- **CI** (`.github/workflows/ci.yml`, on push to `main` and every PR): job `test` installs `requirements-dev.lock` with `--require-hashes` and runs `pytest -q`; job `docker` then builds the image and polls `GET /health` for up to 20s. Nothing in CI needs secrets: `tests/conftest.py` fakes `generate_reply`, so no real Gemini call is made, and `/health` works without `GOOGLE_API_KEY`.
+
 ## Configuration
 
 Settings come from environment variables, with a `.env` file at the repo root as a fallback (real env vars take precedence): `GOOGLE_API_KEY` (required for `/chat`), `GATEWAY_API_KEYS` (comma-separated client keys, each at least 32 characters, sent as `Authorization: Bearer <key>`; list two while rotating; if empty, `/chat` rejects every request), `GEMINI_MODEL` (default `gemini-flash-latest`), `APP_NAME`, `RATE_LIMIT_REQUESTS` (default 5; `0` closes `/chat` to everyone) and `RATE_LIMIT_WINDOW_SECONDS` (default 60), which bound `/chat` per client key. `GUARDRAIL_CHECKS` (comma-separated; unset means all of `email,card,phone,injection`, set-but-empty means none). `GEMINI_CHEAP_MODEL` (default `gemini-flash-lite-latest`) and `ROUTING_TOKEN_THRESHOLD` (default 1000) drive complexity routing; setting the two model names equal disables the fallback retry. `.env` is gitignored; `.env.example` is the committed template.
